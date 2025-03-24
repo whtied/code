@@ -1,0 +1,105 @@
+# outcome
+setwd("D:/r/anorexia nervosa")
+library(VariantAnnotation)
+library(gwasglue)
+library(data.table)
+library(vroom)
+vcf=readVcf('anorexia nervosa_ieu-a-1186.vcf.gz')
+an = gwasvcf_to_TwoSampleMR(vcf, type = "outcome")
+fwrite(an,file="aanorexia_nervosa_ieu-a-1186.csv")
+
+# exposure
+setwd('D:/r/csfaddrsid')
+#add rsid
+library(dplyr)
+library(MungeSumstats)
+library(SNPlocs.Hsapiens.dbSNP155.GRCh37)
+library(future)
+library(data.table)
+library(vroom)
+library(purrr)
+plan(multisession, workers = 10) 
+add_rsid <- function(file_path) {
+  data <- fread(file_path)
+  data[, effect_allele := as.character(effect_allele)]
+  data[, other_allele := as.character(other_allele)]
+  setnames(data, 
+           old = c("effect_allele", "other_allele", "P"),
+           new = c("A1", "A2", "PVal"))
+  format_sumstats(path=data,ref_genome = "GRCh37",dbSNP=155,save_path = paste0(gsub(".csv", "", file_path), "_add_rsid.csv"))
+}
+file_paths <- list.files(pattern = "*.csv")
+furrr::future_map(file_paths, add_rsid)
+
+#clumping
+library(TwoSampleMR)
+library(dplyr)
+library(data.table)
+library(ieugwasr)
+library(vroom)
+library(furrr)
+library(future)
+plan(multisession, workers = 10)
+clump_data <- function(file_path) {
+  dat <- fread(file_path)
+  data <- rename(dat, 
+                 rsid= SNP,
+                 pval= P,
+                 trait_id= TRAIT_ID
+  )
+  exposure_data_clumped <- ld_clump_local(
+    dat = data,
+    clump_kb = 10000,      
+    clump_r2 = 0.001,      
+    clump_p = 1,           
+    bfile = "D:/r/csf/EUR",       
+    plink_bin = "D:/library/genetics.binaRies/bin/plink.exe"  
+  )
+  fwrite(exposure_data_clumped, paste0(gsub(".csv", "_climped.csv", file_path)))
+  
+  return(TRUE) 
+}
+file_paths <- list.files(pattern = "GCST[0-9]+_trait_id_add_rsid.csv")
+furrr::future_map(file_paths, clump_data)
+
+# mr
+library(TwoSampleMR)
+library(dplyr)
+library(data.table)
+library(vroom)
+exposure_data <- TwoSampleMR::read_exposure_data(  
+  filename = 'D:/r/csfclump/GCST90026243_trait_id_add_rsid_clumped.csv', sep = ',',
+  snp_col = 'rsid', chr_col = 'CHR', pos_col = 'BP',
+  effect_allele_col = 'A1', other_allele_col = 'A2',
+  beta_col = 'BETA', se_col = 'SE', eaf_col = 'FRQ', pval_col = 'pval',
+  samplesize_col = 'samplesize.exposure',
+)
+exposure_data$id.exposure <- "GCST90026243"
+outcome_data<-vroom('anorexia_nervosa_ieu-a-1186.csv')
+EXPOSURE_NAME <- "Oxalate (ethanedioate)"
+OUTCOME_NAME<- "AN"
+exposure_data$exposure <- EXPOSURE_NAME
+outcome_data$outcome <- OUTCOME_NAME
+data <- TwoSampleMR::harmonise_data(exposure_data, outcome_data, action = 2)
+mr_result <- mr(data,method_list = c("mr_ivw",
+                                     "mr_egger_regression",
+                                     "mr_weighted_median"))
+mr_result3 <- mr(data)
+mr_heterogeneity_result<-mr_heterogeneity(data)
+directionality_result <- directionality_test(data)
+mr_presso_result <- run_mr_presso(data)
+data2<-mr_presso_result[[1]]$`MR-PRESSO results`$`Outlier Test`
+write.csv(mr_presso_result[[1]]$`MR-PRESSO results`$`Outlier Test`, file = "GCST90026245_outlier_SNPs.csv")
+presso_pvalue <- mr_presso_result[[1]]$`MR-PRESSO results`$`Global Test`$Pvalue
+main_mr_results <- mr_presso_result[[1]]$`Main MR results`
+write.csv(presso_pvalue, "presso_pvalue.csv", row.names = FALSE)
+mr_pleiotropy_result<-mr_pleiotropy_test(data)
+write.csv(generate_odds_ratios(mr_result), file = "GCST90026288_MR_Result.csv", row.names = FALSE)
+steiger_sl<-steiger_filtering(data)
+write.csv(steiger_sl, file = "GCST90026243_steiger_sl.csv")
+
+# plot
+mr_scatter_plot(mr_result, data)
+mr_forest_plot(res_single)
+mr_funnel_plot(singlesnp_results = res_single)
+mr_leaveoneout_plot(leaveoneout_results = mr_leaveoneout(data))
